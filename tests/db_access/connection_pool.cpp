@@ -33,69 +33,55 @@ go_bandit([](){
     describe("Test connection pool", [&](){
         auto& s = getSettingsRef();
 
+
         it("can clear pool properly", [&](){
             auto&& connectionPool = makeConnectionPool<true, true, true, true, true>([&](){
                 return std::async(std::launch::async, [&](){ return std::make_shared<Connection>(s.database, s.user, s.password, s.host, s.port); });
             });
+            auto waitForPoolState = [&connectionPool](std::chrono::milliseconds max, auto size, auto available) {
+                backoffSleep(max, [&]() {
+                        auto&& poolState = connectionPool.poolState();
+                        return poolState.size == size && poolState.available == available;
+                    });
+            };
+            auto assertPoolState = [&connectionPool](auto size, auto available) {
+                auto&& poolState = connectionPool.poolState();
+                AssertThat(poolState.size, Equals(size));
+                AssertThat(poolState.available, Equals(available));
+            };
             connectionPool.startHealthCareJob();
-
-            auto&& poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(0U));
-            AssertThat(poolState.available, Equals(0U));
+            assertPoolState(0u, 0u);
 
             connectionPool.clearPool();
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(0U));
-            AssertThat(poolState.available, Equals(0U));
+            assertPoolState(0u, 0u);
 
             {
                 auto&& item = connectionPool.get();
                 static_cast<void>(item);
-                poolState = connectionPool.poolState();
-                AssertThat(poolState.size, Equals(1U));
-                AssertThat(poolState.available, Equals(0U));
+                assertPoolState(1u, 0u);
             }
 
-            backoffSleep(10s, [&](){
-                auto&& poolState = connectionPool.poolState();
-                return poolState.size==1U && poolState.available==1U;
-            });
-
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(1U));
-            AssertThat(poolState.available, Equals(1U));
+            waitForPoolState(10s, 1u, 1u);
+            assertPoolState(1u, 1u);
 
             connectionPool.clearPool();
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(0U));
-            AssertThat(poolState.available, Equals(0U));
+            assertPoolState(0u, 0u);
             connectionPool.clearPool();
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(0U));
-            AssertThat(poolState.available, Equals(0U));
+            assertPoolState(0u, 0u);
 
             {
                 auto&& item1 = connectionPool.get();
                 auto&& item2 = connectionPool.get();
                 static_cast<void>(item1);
                 static_cast<void>(item2);
-                poolState = connectionPool.poolState();
-                AssertThat(poolState.size, Equals(2U));
-                AssertThat(poolState.available, Equals(0U));
+                assertPoolState(2u, 0u);
 
                 connectionPool.clearPool();
-                poolState = connectionPool.poolState();
-                AssertThat(poolState.size, Equals(0U));
-                AssertThat(poolState.available, Equals(0U));
+                assertPoolState(0u, 0u);
 
                 connectionPool.get();
-                backoffSleep(2s, [&](){
-                    auto&& poolState = connectionPool.poolState();
-                    return poolState.size==1 && poolState.available==1;
-                });
-                poolState = connectionPool.poolState();
-                AssertThat(poolState.size, Equals(1U));
-                AssertThat(poolState.available, Equals(1U));
+                waitForPoolState(2s, 1u, 1u);
+                assertPoolState(1u, 1u);
             }
 
             connectionPool.clearPool();
@@ -106,13 +92,8 @@ go_bandit([](){
             connectionPool.startResourceCountKeeper();
             connectionPool.startHealthCareJob();
 
-            backoffSleep(10s, [&](){
-                auto&& poolState = connectionPool.poolState();
-                return poolState.size==5 && poolState.available==5;
-            });
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(5U));
-            AssertThat(poolState.available, Equals(5U));
+            waitForPoolState(10s, 5u, 5u);
+            assertPoolState(5u, 5u);
 
             connectionPool.stopResourceCountKeeper();
             while (connectionPool.isResourceCountKeeperThreadRunning()){
@@ -121,13 +102,8 @@ go_bandit([](){
             connectionPool.clearPool();
             connectionPool.startResourceCountKeeper();
 
-            backoffSleep(10s, [&](){
-                auto&& poolState = connectionPool.poolState();
-                return poolState.size==5 && poolState.available==5;
-            });
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(5U));
-            AssertThat(poolState.available, Equals(poolState.size));
+            waitForPoolState(10s, 5u, 5u);
+            assertPoolState(5u, 5u);
 
             {
                 auto connection = connectionPool.get();
@@ -136,20 +112,23 @@ go_bandit([](){
                 auto&& poolState = connectionPool.poolState();
                 return poolState.size>=6U && poolState.available>=6U;
             });
-            poolState = connectionPool.poolState();
+            auto&& poolState = connectionPool.poolState();
             AssertThat(poolState.size, IsGreaterThanOrEqualTo(6U));
             AssertThat(poolState.available, IsGreaterThanOrEqualTo(6U));
 
             connectionPool.clearPool();
-            poolState = connectionPool.poolState();
-            AssertThat(poolState.size, Equals(0U));
-            AssertThat(poolState.available, Equals(poolState.size));
+            assertPoolState(0u, 0u);
         });
 
         it("can spin default connections", [&](){
             auto connectionPool = makeConnectionPool([&](){
                 return std::async(std::launch::async, [&](){ return std::make_shared<Connection>(s.database, s.user, s.password, s.host, s.port); });
             });
+            auto assertPoolState = [&connectionPool](auto size, auto available) {
+                auto&& poolState = connectionPool.poolState();
+                AssertThat(poolState.size, Equals(size));
+                AssertThat(poolState.available, Equals(available));
+            };
 
             connectionPool.setMinSpare(10);
             connectionPool.setMaxSpare(20);
@@ -163,6 +142,7 @@ go_bandit([](){
             });
             AssertThat(connectionPool.poolState().available, Equals(10u));
             AssertThat(connectionPool.poolState().size, Equals(10u));
+            assertPoolState(10u, 10u);
 
             connectionPool.clearPool();
             backoffSleep(1000ms, [&](){
@@ -170,52 +150,73 @@ go_bandit([](){
             });
             AssertThat(connectionPool.poolState().size, Equals(10u));
             AssertThat(connectionPool.poolState().available, Equals(10u));
+            assertPoolState(10u, 10u);
 
             connectionPool.stopResourceCountKeeper();
             connectionPool.clearPool();
             AssertThat(connectionPool.poolState().size, Equals(0u));
             AssertThat(connectionPool.poolState().available, Equals(0u));
+            assertPoolState(0u, 0u);
         });
 
         it("can work without keeper job", [&](){
             auto connectionPool = makeConnectionPool(makeSharedPtrConnection);
+            auto assertPoolState = [&connectionPool](auto size, auto available) {
+                auto&& poolState = connectionPool.poolState();
+                AssertThat(poolState.size, Equals(size));
+                AssertThat(poolState.available, Equals(available));
+            };
             AssertThat(connectionPool.poolState().size, Equals(0u));
             AssertThat(connectionPool.poolState().available, Equals(0u));
+            assertPoolState(0u, 0u);
 
             {
                 auto connection1 = connectionPool.get();
                 AssertThat(connectionPool.poolState().size, Equals(1u));
                 AssertThat(connectionPool.poolState().available, Equals(0u));
+                assertPoolState(1u, 0u);
             }
             AssertThat(connectionPool.poolState().size, Equals(1u));
             AssertThat(connectionPool.poolState().available, Equals(1u));
+            assertPoolState(1u, 1u);
 
             {
                 auto connection1 = connectionPool.get();
                 AssertThat(connectionPool.poolState().size, Equals(1u));
                 AssertThat(connectionPool.poolState().available, Equals(0u));
+                assertPoolState(1u, 0u);
                 {
                     auto connection2 = connectionPool.get();
                     AssertThat(connectionPool.poolState().size, Equals(2u));
                     AssertThat(connectionPool.poolState().available, Equals(0u));
+                    assertPoolState(2u, 0u);
                     auto connection3 = connectionPool.get();
                     AssertThat(connectionPool.poolState().size, Equals(3u));
                     AssertThat(connectionPool.poolState().available, Equals(0u));
+                    assertPoolState(3u, 0u);
                 }
                 AssertThat(connectionPool.poolState().size, Equals(3u));
                 AssertThat(connectionPool.poolState().available, Equals(2u));
+                assertPoolState(3u, 2u);
             }
             AssertThat(connectionPool.poolState().size, Equals(3u));
             AssertThat(connectionPool.poolState().available, Equals(3u));
+            assertPoolState(3u, 3u);
         });
 
         it("has working keeper job", [&](){
             auto connectionPool = makeConnectionPool(makeSharedPtrConnection);
+            auto assertPoolState = [&connectionPool](auto size, auto available) {
+                auto&& poolState = connectionPool.poolState();
+                AssertThat(poolState.size, Equals(size));
+                AssertThat(poolState.available, Equals(available));
+            };
 
             connectionPool.setMinSpare(1);
             connectionPool.setMaxSpare(2);
             AssertThat(connectionPool.poolState().size, Equals(0u));
             AssertThat(connectionPool.poolState().available, Equals(0u));
+            assertPoolState(0u, 0u);
 
             connectionPool.startResourceCountKeeper();
 
@@ -224,6 +225,7 @@ go_bandit([](){
             });
             AssertThat(connectionPool.poolState().size, Equals(1u));
             AssertThat(connectionPool.poolState().available, Equals(1u));
+            assertPoolState(1u, 1u);
 
 
             {
@@ -234,6 +236,7 @@ go_bandit([](){
                 });
                 AssertThat(connectionPool.poolState().size, Equals(2u));
                 AssertThat(connectionPool.poolState().available, Equals(1u));
+                assertPoolState(2u, 1u);
                 {
                     auto connection2 = connectionPool.get();
                     backoffSleep(1000ms, [&](){
@@ -241,6 +244,7 @@ go_bandit([](){
                     });
                     AssertThat(connectionPool.poolState().size, Equals(3u));
                     AssertThat(connectionPool.poolState().available, Equals(1u));
+                    assertPoolState(3u, 1u);
 
                     auto connection3 = connectionPool.get();
                     backoffSleep(1000ms, [&](){
@@ -248,6 +252,7 @@ go_bandit([](){
                     });
                     AssertThat(connectionPool.poolState().size, Equals(4u));
                     AssertThat(connectionPool.poolState().available, Equals(1u));
+                    assertPoolState(4u, 1u);
 
                     auto connection4 = connectionPool.get();
                     backoffSleep(1000ms, [&](){
@@ -255,12 +260,14 @@ go_bandit([](){
                     });
                     AssertThat(connectionPool.poolState().size, Equals(5u));
                     AssertThat(connectionPool.poolState().available, Equals(1u));
+                    assertPoolState(5u, 1u);
                 }
                 backoffSleep(1000ms, [&](){
                     return connectionPool.poolState().size==3 && connectionPool.poolState().available==2;
                 });
                 AssertThat(connectionPool.poolState().size, Equals(3u));
                 AssertThat(connectionPool.poolState().available, Equals(2u));
+                assertPoolState(3u, 2u);
 
 
                 {
@@ -270,6 +277,7 @@ go_bandit([](){
                     });
                     AssertThat(connectionPool.poolState().size, Equals(3u));
                     AssertThat(connectionPool.poolState().available, Equals(1u));
+                    assertPoolState(3u, 1u);
 
                     auto connection3 = connectionPool.get();
                     backoffSleep(1000ms, [&](){
@@ -277,6 +285,7 @@ go_bandit([](){
                     });
                     AssertThat(connectionPool.poolState().size, Equals(4u));
                     AssertThat(connectionPool.poolState().available, Equals(1u));
+                    assertPoolState(4u, 1u);
 
                     auto connection4 = connectionPool.get();
                     backoffSleep(1000ms, [&](){
@@ -284,18 +293,21 @@ go_bandit([](){
                     });
                     AssertThat(connectionPool.poolState().size, Equals(5u));
                     AssertThat(connectionPool.poolState().available, Equals(1u));
+                    assertPoolState(5u, 1u);
                 }
                 backoffSleep(1000ms, [&](){
                     return connectionPool.poolState().size==3 && connectionPool.poolState().available==2;
                 });
                 AssertThat(connectionPool.poolState().size, Equals(3u));
                 AssertThat(connectionPool.poolState().available, Equals(2u));
+                assertPoolState(3u, 2u);
             }
             backoffSleep(1000ms, [&](){
                 return connectionPool.poolState().size==2 && connectionPool.poolState().available==2;
             });
             AssertThat(connectionPool.poolState().size, Equals(2u));
             AssertThat(connectionPool.poolState().available, Equals(2u));
+            assertPoolState(2u, 2u);
 
             {
                 auto connection2 = connectionPool.get();
@@ -304,12 +316,14 @@ go_bandit([](){
                 });
                 AssertThat(connectionPool.poolState().size, Equals(2u));
                 AssertThat(connectionPool.poolState().available, Equals(1u));
+                assertPoolState(2u, 1u);
             }
             backoffSleep(1000ms, [&](){
                 return connectionPool.poolState().size==2 && connectionPool.poolState().available==2;
             });
             AssertThat(connectionPool.poolState().size, Equals(2u));
             AssertThat(connectionPool.poolState().available, Equals(2u));
+            assertPoolState(2u, 2u);
         });
 
         it("can count unhealthy resources", [&](){
